@@ -60,12 +60,14 @@ static int handle_scan(struct nl80211_state *state,
 	struct nl_msg *ssids = NULL, *freqs = NULL;
 	char *eptr;
 	int err = -ENOBUFS;
-	int i;
+	int i, max_dwell = 0, min_dwell = 0;
 	enum {
 		NONE,
 		FREQ,
 		IES,
 		SSID,
+		MIN_DWELL,
+		MAX_DWELL,
 		DONE,
 	} parse = NONE;
 	int freq;
@@ -101,6 +103,9 @@ static int handle_scan(struct nl80211_state *state,
 				parse = DONE;
 				passive = true;
 				break;
+			} else if (strcmp(argv[i], "dwell") == 0) {
+				parse = MIN_DWELL;
+				break;
 			}
 		case DONE:
 			return 1;
@@ -125,8 +130,30 @@ static int handle_scan(struct nl80211_state *state,
 		case SSID:
 			NLA_PUT(ssids, i, strlen(argv[i]), argv[i]);
 			break;
+		case MIN_DWELL:
+			min_dwell = strtoul(argv[i], &eptr, 10);
+			if (eptr != argv[i] + strlen(argv[i])) {
+				/* failed to parse as number -- maybe a tag? */
+				i--;
+				parse = NONE;
+				continue;
+			}
+			parse = MAX_DWELL;
+			break;
+		case MAX_DWELL:
+			max_dwell = strtoul(argv[i], &eptr, 10);
+			if (eptr != argv[i] + strlen(argv[i])) {
+				/* failed to parse as number -- maybe a tag? */
+				i--;
+				parse = NONE;
+				continue;
+			}
+			parse = NONE;
+			break;
 		}
 	}
+
+	printf("$$$$$ %s min=%d, max=%d\n", __FUNCTION__, min_dwell, max_dwell);
 
 	if (!have_ssids)
 		NLA_PUT(ssids, 1, 0, "");
@@ -135,6 +162,12 @@ static int handle_scan(struct nl80211_state *state,
 
 	if (have_freqs)
 		nla_put_nested(msg, NL80211_ATTR_SCAN_FREQUENCIES, freqs);
+
+	if (min_dwell)
+		NLA_PUT_U32(msg, NL80211_ATTR_SCAN_MIN_DWELL, min_dwell);
+
+	if (max_dwell)
+		NLA_PUT_U32(msg, NL80211_ATTR_SCAN_MAX_DWELL, max_dwell);
 
 	err = 0;
  nla_put_failure:
@@ -1337,7 +1370,7 @@ static int handle_scan_combined(struct nl80211_state *state,
 	dump_argv[0] = argv[0];
 	return handle_cmd(state, II_NETDEV, dump_argc, dump_argv);
 }
-TOPLEVEL(scan, "[-u] [freq <freq>*] [ies <hex as 00:11:..>] [ssid <ssid>*|passive]", 0, 0,
+TOPLEVEL(scan, "[-u] [freq <freq>*] [ies <hex as 00:11:..>] [dwell <min> <max>] [ssid <ssid>*|passive]", 0, 0,
 	 CIB_NETDEV, handle_scan_combined,
 	 "Scan on the given frequencies and probe for the given SSIDs\n"
 	 "(or wildcard if not given) unless passive scanning is requested.\n"
@@ -1347,7 +1380,7 @@ COMMAND(scan, dump, "[-u]",
 	NL80211_CMD_GET_SCAN, NLM_F_DUMP, CIB_NETDEV, handle_scan_dump,
 	"Dump the current scan results. If -u is specified, print unknown\n"
 	"data in scan results.");
-COMMAND(scan, trigger, "[freq <freq>*] [ies <hex as 00:11:..>] [ssid <ssid>*|passive]",
+COMMAND(scan, trigger, "[freq <freq>*] [ies <hex as 00:11:..>] [dwell <min> <max>] [ssid <ssid>*|passive]",
 	NL80211_CMD_TRIGGER_SCAN, 0, CIB_NETDEV, handle_scan,
 	 "Trigger a scan on the given frequencies with probing for the given\n"
 	 "SSIDs (or wildcard if not given) unless passive scanning is requested.");
