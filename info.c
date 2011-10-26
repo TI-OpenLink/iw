@@ -21,6 +21,32 @@ static void print_flag(const char *name, int *open)
 	*open = 1;
 }
 
+static char *cipher_name(__u32 c)
+{
+	static char buf[20];
+
+	switch (c) {
+	case 0x000fac01:
+		return "WEP40 (00-0f-ac:1)";
+	case 0x000fac05:
+		return "WEP104 (00-0f-ac:5)";
+	case 0x000fac02:
+		return "TKIP (00-0f-ac:2)";
+	case 0x000fac04:
+		return "CCMP (00-0f-ac:4)";
+	case 0x000fac06:
+		return "CMAC (00-0f-ac:6)";
+	case 0x00147201:
+		return "WPI-SMS4 (00-14-72:1)";
+	default:
+		sprintf(buf, "%.2x-%.2x-%.2x:%d",
+			c >> 24, (c >> 16) & 0xff,
+			(c >> 8) & 0xff, c & 0xff);
+
+		return buf;
+	}
+}
+
 static int print_phy_handler(struct nl_msg *msg, void *arg)
 {
 	struct nlattr *tb_msg[NL80211_ATTR_MAX + 1];
@@ -168,10 +194,115 @@ static int print_phy_handler(struct nl_msg *msg, void *arg)
 		printf("\tCoverage class: %d (up to %dm)\n", coverage, 450 * coverage);
 	}
 
+	if (tb_msg[NL80211_ATTR_CIPHER_SUITES]) {
+		int num = nla_len(tb_msg[NL80211_ATTR_CIPHER_SUITES]) / sizeof(__u32);
+		int i;
+		__u32 *ciphers = nla_data(tb_msg[NL80211_ATTR_CIPHER_SUITES]);
+		if (num > 0) {
+			printf("\tSupported Ciphers:\n");
+			for (i = 0; i < num; i++)
+				printf("\t\t* %s\n",
+					cipher_name(ciphers[i]));
+		}
+	}
+
+	if (tb_msg[NL80211_ATTR_WIPHY_ANTENNA_AVAIL_TX] &&
+	    tb_msg[NL80211_ATTR_WIPHY_ANTENNA_AVAIL_RX])
+		printf("\tAvailable Antennas: TX %#x RX %#x\n",
+		       nla_get_u32(tb_msg[NL80211_ATTR_WIPHY_ANTENNA_AVAIL_TX]),
+		       nla_get_u32(tb_msg[NL80211_ATTR_WIPHY_ANTENNA_AVAIL_RX]));
+
+	if (tb_msg[NL80211_ATTR_WIPHY_ANTENNA_TX] &&
+	    tb_msg[NL80211_ATTR_WIPHY_ANTENNA_RX])
+		printf("\tConfigured Antennas: TX %#x RX %#x\n",
+		       nla_get_u32(tb_msg[NL80211_ATTR_WIPHY_ANTENNA_TX]),
+		       nla_get_u32(tb_msg[NL80211_ATTR_WIPHY_ANTENNA_RX]));
+
 	if (tb_msg[NL80211_ATTR_SUPPORTED_IFTYPES]) {
 		printf("\tSupported interface modes:\n");
 		nla_for_each_nested(nl_mode, tb_msg[NL80211_ATTR_SUPPORTED_IFTYPES], rem_mode)
-			printf("\t\t * %s\n", iftype_name(nl_mode->nla_type));
+			printf("\t\t * %s\n", iftype_name(nla_type(nl_mode)));
+	}
+
+	if (tb_msg[NL80211_ATTR_SOFTWARE_IFTYPES]) {
+		printf("\tsoftware interface modes (can always be added):\n");
+		nla_for_each_nested(nl_mode, tb_msg[NL80211_ATTR_SOFTWARE_IFTYPES], rem_mode)
+			printf("\t\t * %s\n", iftype_name(nla_type(nl_mode)));
+	}
+
+	if (tb_msg[NL80211_ATTR_INTERFACE_COMBINATIONS]) {
+		struct nlattr *nl_combi;
+		int rem_combi;
+		bool have_combinations = false;
+
+		nla_for_each_nested(nl_combi, tb_msg[NL80211_ATTR_INTERFACE_COMBINATIONS], rem_combi) {
+			static struct nla_policy iface_combination_policy[NUM_NL80211_IFACE_COMB] = {
+				[NL80211_IFACE_COMB_LIMITS] = { .type = NLA_NESTED },
+				[NL80211_IFACE_COMB_MAXNUM] = { .type = NLA_U32 },
+				[NL80211_IFACE_COMB_STA_AP_BI_MATCH] = { .type = NLA_FLAG },
+				[NL80211_IFACE_COMB_NUM_CHANNELS] = { .type = NLA_U32 },
+			};
+			struct nlattr *tb_comb[NUM_NL80211_IFACE_COMB];
+			static struct nla_policy iface_limit_policy[NUM_NL80211_IFACE_LIMIT] = {
+				[NL80211_IFACE_LIMIT_TYPES] = { .type = NLA_NESTED },
+				[NL80211_IFACE_LIMIT_MAX] = { .type = NLA_U32 },
+			};
+			struct nlattr *tb_limit[NUM_NL80211_IFACE_LIMIT];
+			struct nlattr *nl_limit;
+			int err, rem_limit;
+			bool comma = false;
+
+			if (!have_combinations) {
+				printf("\tvalid interface combinations:\n");
+				have_combinations = true;
+			}
+
+			printf("\t\t * ");
+
+			err = nla_parse_nested(tb_comb, MAX_NL80211_IFACE_COMB,
+					       nl_combi, iface_combination_policy);
+			if (err || !tb_comb[NL80211_IFACE_COMB_LIMITS] ||
+			    !tb_comb[NL80211_IFACE_COMB_MAXNUM] ||
+			    !tb_comb[NL80211_IFACE_COMB_NUM_CHANNELS]) {
+				printf(" <failed to parse>\n");
+				goto broken_combination;
+			}
+
+			nla_for_each_nested(nl_limit, tb_comb[NL80211_IFACE_COMB_LIMITS], rem_limit) {
+				bool ift_comma = false;
+
+				err = nla_parse_nested(tb_limit, MAX_NL80211_IFACE_LIMIT,
+						       nl_limit, iface_limit_policy);
+				if (err || !tb_limit[NL80211_IFACE_LIMIT_TYPES]) {
+					printf("<failed to parse>\n");
+					goto broken_combination;
+				}
+
+				if (comma)
+					printf(", ");
+				comma = true;
+				printf("#{");
+
+				nla_for_each_nested(nl_mode, tb_limit[NL80211_IFACE_LIMIT_TYPES], rem_mode) {
+					printf("%s %s", ift_comma ? "," : "",
+						iftype_name(nla_type(nl_mode)));
+					ift_comma = true;
+				}
+				printf(" } <= %u", nla_get_u32(tb_limit[NL80211_IFACE_LIMIT_MAX]));
+			}
+			printf(",\n\t\t   ");
+
+			printf("total <= %d, #channels <= %d%s\n",
+				nla_get_u32(tb_comb[NL80211_IFACE_COMB_MAXNUM]),
+				nla_get_u32(tb_comb[NL80211_IFACE_COMB_NUM_CHANNELS]),
+				tb_comb[NL80211_IFACE_COMB_STA_AP_BI_MATCH] ?
+					", STA/AP BI must match" : "");
+broken_combination:
+			;
+		}
+
+		if (!have_combinations)
+			printf("\tinterface combinations are not supported\n");
 	}
 
 	if (tb_msg[NL80211_ATTR_SUPPORTED_COMMANDS]) {
@@ -209,6 +340,62 @@ static int print_phy_handler(struct nl_msg *msg, void *arg)
 				printf("\n");
 		}
 	}
+
+	if (tb_msg[NL80211_ATTR_SUPPORT_IBSS_RSN])
+		printf("\tDevice supports RSN-IBSS.\n");
+
+	if (tb_msg[NL80211_ATTR_WOWLAN_TRIGGERS_SUPPORTED]) {
+		struct nlattr *tb_wowlan[NUM_NL80211_WOWLAN_TRIG];
+		static struct nla_policy wowlan_policy[NUM_NL80211_WOWLAN_TRIG] = {
+			[NL80211_WOWLAN_TRIG_ANY] = { .type = NLA_FLAG },
+			[NL80211_WOWLAN_TRIG_DISCONNECT] = { .type = NLA_FLAG },
+			[NL80211_WOWLAN_TRIG_MAGIC_PKT] = { .type = NLA_FLAG },
+			[NL80211_WOWLAN_TRIG_PKT_PATTERN] = {
+				.minlen = sizeof(struct nl80211_wowlan_pattern_support),
+			},
+			[NL80211_WOWLAN_TRIG_GTK_REKEY_SUPPORTED] = { .type = NLA_FLAG },
+			[NL80211_WOWLAN_TRIG_GTK_REKEY_FAILURE] = { .type = NLA_FLAG },
+			[NL80211_WOWLAN_TRIG_EAP_IDENT_REQUEST] = { .type = NLA_FLAG },
+			[NL80211_WOWLAN_TRIG_4WAY_HANDSHAKE] = { .type = NLA_FLAG },
+			[NL80211_WOWLAN_TRIG_RFKILL_RELEASE] = { .type = NLA_FLAG },
+		};
+		struct nl80211_wowlan_pattern_support *pat;
+		int err;
+
+		err = nla_parse_nested(tb_wowlan, MAX_NL80211_WOWLAN_TRIG,
+				       tb_msg[NL80211_ATTR_WOWLAN_TRIGGERS_SUPPORTED],
+				       wowlan_policy);
+		printf("\tWoWLAN support:");
+		if (err) {
+			printf(" <failed to parse>\n");
+		} else {
+			printf("\n");
+			if (tb_wowlan[NL80211_WOWLAN_TRIG_ANY])
+				printf("\t\t * wake up on anything (device continues operating normally)\n");
+			if (tb_wowlan[NL80211_WOWLAN_TRIG_DISCONNECT])
+				printf("\t\t * wake up on disconnect\n");
+			if (tb_wowlan[NL80211_WOWLAN_TRIG_MAGIC_PKT])
+				printf("\t\t * wake up on magic packet\n");
+			if (tb_wowlan[NL80211_WOWLAN_TRIG_PKT_PATTERN]) {
+				pat = nla_data(tb_wowlan[NL80211_WOWLAN_TRIG_PKT_PATTERN]);
+				printf("\t\t * wake up on pattern match, up to %u patterns of %u-%u bytes\n",
+					pat->max_patterns, pat->min_pattern_len, pat->max_pattern_len);
+			}
+			if (tb_wowlan[NL80211_WOWLAN_TRIG_GTK_REKEY_SUPPORTED])
+				printf("\t\t * can do GTK rekeying\n");
+			if (tb_wowlan[NL80211_WOWLAN_TRIG_GTK_REKEY_FAILURE])
+				printf("\t\t * wake up on GTK rekey failure\n");
+			if (tb_wowlan[NL80211_WOWLAN_TRIG_EAP_IDENT_REQUEST])
+				printf("\t\t * wake up on EAP identity request\n");
+			if (tb_wowlan[NL80211_WOWLAN_TRIG_4WAY_HANDSHAKE])
+				printf("\t\t * wake up on 4-way handshake\n");
+			if (tb_wowlan[NL80211_WOWLAN_TRIG_RFKILL_RELEASE])
+				printf("\t\t * wake up on rfkill release\n");
+		}
+	}
+
+	if (tb_msg[NL80211_ATTR_ROAM_SUPPORT])
+		printf("\tDevice supports roaming.\n");
 
 	return NL_SKIP;
 }

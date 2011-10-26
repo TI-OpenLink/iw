@@ -26,6 +26,8 @@ LOCAL_SRC_FILES := \
 	status.c \
 	survey.c \
 	util.c \
+	roc.c \
+	wowlan.c \
 	version.c
 
 LOCAL_C_INCLUDES := \

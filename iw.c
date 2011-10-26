@@ -23,9 +23,8 @@
 #include "nl80211.h"
 #include "iw.h"
 
-#ifndef CONFIG_LIBNL20
-/* libnl 2.0 compatibility code */
-
+/* libnl 1.x compatibility code */
+#if !defined(CONFIG_LIBNL20) && !defined(CONFIG_LIBNL30)
 static inline struct nl_handle *nl_socket_alloc(void)
 {
 	return nl_handle_alloc();
@@ -45,7 +44,7 @@ static inline int __genl_ctrl_alloc_cache(struct nl_sock *h, struct nl_cache **c
 	return 0;
 }
 #define genl_ctrl_alloc_cache __genl_ctrl_alloc_cache
-#endif /* CONFIG_LIBNL20 */
+#endif /* CONFIG_LIBNL20 && CONFIG_LIBNL30 */
 
 int iw_debug = 0;
 
@@ -259,6 +258,7 @@ static int __handle_cmd(struct nl80211_state *state, enum id_input idby,
 {
 	const struct cmd *cmd, *match = NULL, *sectcmd;
 	struct nl_cb *cb;
+	struct nl_cb *s_cb;
 	struct nl_msg *msg;
 	int devidx = 0;
 	int err, o_argc;
@@ -380,7 +380,8 @@ static int __handle_cmd(struct nl80211_state *state, enum id_input idby,
 	}
 
 	cb = nl_cb_alloc(iw_debug ? NL_CB_DEBUG : NL_CB_DEFAULT);
-	if (!cb) {
+	s_cb = nl_cb_alloc(iw_debug ? NL_CB_DEBUG : NL_CB_DEFAULT);
+	if (!cb || !s_cb) {
 		fprintf(stderr, "failed to allocate netlink callbacks\n");
 		err = 2;
 		goto out_free_msg;
@@ -403,6 +404,8 @@ static int __handle_cmd(struct nl80211_state *state, enum id_input idby,
 	err = cmd->handler(state, cb, msg, argc, argv);
 	if (err)
 		goto out;
+
+	nl_socket_set_cb(state->nl_sock, s_cb);
 
 	err = nl_send_auto_complete(state->nl_sock, msg);
 	if (err < 0)

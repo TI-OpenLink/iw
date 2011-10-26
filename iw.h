@@ -11,7 +11,8 @@
 
 #define ETH_ALEN 6
 
-#ifndef CONFIG_LIBNL20
+/* libnl 1.x compatibility code */
+#if !defined(CONFIG_LIBNL20) && !defined(CONFIG_LIBNL30)
 #  define nl_sock nl_handle
 #endif
 
@@ -56,6 +57,7 @@ struct cmd {
 };
 
 #define ARRAY_SIZE(ar) (sizeof(ar)/sizeof(ar[0]))
+#define DIV_ROUND_UP(x, y) (((x) + (y - 1)) / (y))
 
 #define __COMMAND(_section, _symname, _name, _args, _nlcmd, _flags, _hidden, _idby, _handler, _help, _sel)\
 	static struct cmd						\
@@ -127,6 +129,8 @@ __u32 __do_listen_events(struct nl80211_state *state,
 
 int mac_addr_a2n(unsigned char *mac_addr, char *arg);
 void mac_addr_n2a(char *mac_addr, unsigned char *arg);
+int parse_hex_mask(char *hexmask, unsigned char **result, size_t *result_len,
+		   unsigned char **mask);
 unsigned char *parse_hex(char *hex, size_t *outlen);
 
 int parse_keys(struct nl_msg *msg, char **argv, int argc);

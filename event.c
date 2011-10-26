@@ -100,7 +100,7 @@ static void print_frame(struct print_event_args *args, struct nlattr *attr)
 	printf("]");
 }
 
-static void parse_cqm_event(struct nlattr *tb)
+static void parse_cqm_event(struct nlattr **attrs)
 {
 	static struct nla_policy cqm_policy[NL80211_ATTR_CQM_MAX + 1] = {
 		[NL80211_ATTR_CQM_RSSI_THOLD] = { .type = NLA_U32 },
@@ -108,10 +108,12 @@ static void parse_cqm_event(struct nlattr *tb)
 		[NL80211_ATTR_CQM_RSSI_THRESHOLD_EVENT] = { .type = NLA_U32 },
 	};
 	struct nlattr *cqm[NL80211_ATTR_CQM_MAX + 1];
+	struct nlattr *cqm_attr = attrs[NL80211_ATTR_CQM];
 
 	printf("connection quality monitor event: ");
 
-	if (!tb || nla_parse_nested(cqm, NL80211_ATTR_CQM_MAX, tb, cqm_policy)) {
+	if (!cqm_attr ||
+	    nla_parse_nested(cqm, NL80211_ATTR_CQM_MAX, cqm_attr, cqm_policy)) {
 		printf("missing data!\n");
 		return;
 	}
@@ -120,13 +122,66 @@ static void parse_cqm_event(struct nlattr *tb)
 		enum nl80211_cqm_rssi_threshold_event rssi_event;
 		rssi_event = nla_get_u32(cqm[NL80211_ATTR_CQM_RSSI_THRESHOLD_EVENT]);
 		if (rssi_event == NL80211_CQM_RSSI_THRESHOLD_EVENT_HIGH)
-			printf("RSSI went above threshold");
+			printf("RSSI went above threshold\n");
 		else
-			printf("RSSI went below threshold");
-	}
-	printf("\n");
+			printf("RSSI went below threshold\n");
+	} else if (cqm[NL80211_ATTR_CQM_PKT_LOSS_EVENT] &&
+		   attrs[NL80211_ATTR_MAC]) {
+		uint32_t frames;
+		char buf[3*6];
+
+		frames = nla_get_u32(cqm[NL80211_ATTR_CQM_PKT_LOSS_EVENT]);
+		mac_addr_n2a(buf, nla_data(attrs[NL80211_ATTR_MAC]));
+		printf("peer %s didn't ACK %d packets\n", buf, frames);
+	} else
+		printf("unknown event\n");
 }
 
+static const char * key_type_str(enum nl80211_key_type key_type)
+{
+	static char buf[30];
+	switch (key_type) {
+	case NL80211_KEYTYPE_GROUP:
+		return "Group";
+	case NL80211_KEYTYPE_PAIRWISE:
+		return "Pairwise";
+	case NL80211_KEYTYPE_PEERKEY:
+		return "PeerKey";
+	default:
+		snprintf(buf, sizeof(buf), "unknown(%d)", key_type);
+		return buf;
+	}
+}
+
+static void parse_mic_failure(struct nlattr **attrs)
+{
+	printf("Michael MIC failure event:");
+
+	if (attrs[NL80211_ATTR_MAC]) {
+		char addr[3 * ETH_ALEN];
+		mac_addr_n2a(addr, nla_data(attrs[NL80211_ATTR_MAC]));
+		printf(" source MAC address %s", addr);
+	}
+
+	if (attrs[NL80211_ATTR_KEY_SEQ] &&
+	    nla_len(attrs[NL80211_ATTR_KEY_SEQ]) == 6) {
+		unsigned char *seq = nla_data(attrs[NL80211_ATTR_KEY_SEQ]);
+		printf(" seq=%02x%02x%02x%02x%02x%02x",
+		       seq[0], seq[1], seq[2], seq[3], seq[4], seq[5]);
+	}
+	if (attrs[NL80211_ATTR_KEY_TYPE]) {
+		enum nl80211_key_type key_type =
+			nla_get_u32(attrs[NL80211_ATTR_KEY_TYPE]);
+		printf(" Key Type %s", key_type_str(key_type));
+	}
+
+	if (attrs[NL80211_ATTR_KEY_IDX]) {
+		__u8 key_id = nla_get_u8(attrs[NL80211_ATTR_KEY_IDX]);
+		printf(" Key Id %d", key_id);
+	}
+
+	printf("\n");
+}
 
 static int print_event(struct nl_msg *msg, void *arg)
 {
@@ -300,6 +355,16 @@ static int print_event(struct nl_msg *msg, void *arg)
 		print_frame(args, tb[NL80211_ATTR_FRAME]);
 		printf("\n");
 		break;
+	case NL80211_CMD_UNPROT_DEAUTHENTICATE:
+		printf("unprotected deauth");
+		print_frame(args, tb[NL80211_ATTR_FRAME]);
+		printf("\n");
+		break;
+	case NL80211_CMD_UNPROT_DISASSOCIATE:
+		printf("unprotected disassoc");
+		print_frame(args, tb[NL80211_ATTR_FRAME]);
+		printf("\n");
+		break;
 	case NL80211_CMD_CONNECT:
 		status = 0;
 		if (!tb[NL80211_ATTR_STATUS_CODE])
@@ -349,7 +414,15 @@ static int print_event(struct nl_msg *msg, void *arg)
 			(unsigned long long)nla_get_u64(tb[NL80211_ATTR_COOKIE]));
 		break;
 	case NL80211_CMD_NOTIFY_CQM:
-		parse_cqm_event(tb[NL80211_ATTR_CQM]);
+		parse_cqm_event(tb);
+		break;
+	case NL80211_CMD_MICHAEL_MIC_FAILURE:
+		parse_mic_failure(tb);
+		break;
+	case NL80211_CMD_FRAME_TX_STATUS:
+		printf("mgmt TX status (cookie %llx): %s\n",
+			(unsigned long long)nla_get_u64(tb[NL80211_ATTR_COOKIE]),
+			tb[NL80211_ATTR_ACK] ? "acked" : "no ack");
 		break;
 	default:
 		printf("unknown event %d\n", gnlh->cmd);

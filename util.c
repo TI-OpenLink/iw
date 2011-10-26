@@ -48,41 +48,77 @@ int mac_addr_a2n(unsigned char *mac_addr, char *arg)
 	return 0;
 }
 
-unsigned char *parse_hex(char *hex, size_t *outlen)
+int parse_hex_mask(char *hexmask, unsigned char **result, size_t *result_len,
+		   unsigned char **mask)
 {
-	size_t len = strlen(hex);
-	unsigned char *result = calloc(len/2 + 2, 1);
+	size_t len = strlen(hexmask) / 2;
+	unsigned char *result_val;
+	unsigned char *result_mask = NULL;
+
 	int pos = 0;
 
-	if (!result)
-		return NULL;
+	*result_len = 0;
 
-	*outlen = 0;
+	result_val = calloc(len + 2, 1);
+	if (!result_val)
+		goto error;
+	*result = result_val;
+	if (mask) {
+		result_mask = calloc(DIV_ROUND_UP(len, 8) + 2, 1);
+		if (!result_mask)
+			goto error;
+		*mask = result_mask;
+	}
 
 	while (1) {
-		int temp;
-		char *cp = strchr(hex, ':');
+		char *cp = strchr(hexmask, ':');
 		if (cp) {
 			*cp = 0;
 			cp++;
 		}
-		if (sscanf(hex, "%x", &temp) != 1)
-			goto error;
-		if (temp < 0 || temp > 255)
-			goto error;
 
-		(*outlen)++;
+		if (result_mask && (strcmp(hexmask, "-") == 0 ||
+				    strcmp(hexmask, "xx") == 0 ||
+				    strcmp(hexmask, "--") == 0)) {
+			/* skip this byte and leave mask bit unset */
+		} else {
+			int temp, mask_pos;
+			char *end;
 
-		result[pos++] = temp;
+			temp = strtoul(hexmask, &end, 16);
+			if (*end)
+				goto error;
+			if (temp < 0 || temp > 255)
+				goto error;
+			result_val[pos] = temp;
+
+			mask_pos = pos / 8;
+			if (result_mask)
+				result_mask[mask_pos] |= 1 << (pos % 8);
+		}
+
+		(*result_len)++;
+		pos++;
+
 		if (!cp)
 			break;
-		hex = cp;
+		hexmask = cp;
 	}
 
-	return result;
+	return 0;
  error:
-	free(result);
-	return NULL;
+	free(result_val);
+	free(result_mask);
+	return -1;
+}
+
+unsigned char *parse_hex(char *hex, size_t *outlen)
+{
+	unsigned char *result;
+
+	if (parse_hex_mask(hex, &result, outlen, NULL))
+		return NULL;
+	return result;
 }
 
 static const char *ifmodes[NL80211_IFTYPE_MAX + 1] = {
@@ -168,6 +204,11 @@ static const char *commands[NL80211_CMD_MAX + 1] = {
 	[NL80211_CMD_REGISTER_ACTION] = "register_action",
 	[NL80211_CMD_ACTION] = "action",
 	[NL80211_CMD_SET_CHANNEL] = "set_channel",
+	[NL80211_CMD_SET_WDS_PEER] = "set_wds_peer",
+	[NL80211_CMD_FRAME_WAIT_CANCEL] = "frame_wait_cancel",
+	[NL80211_CMD_JOIN_MESH] = "join_mesh",
+	[NL80211_CMD_LEAVE_MESH] = "leave_mesh",
+	[NL80211_CMD_SET_REKEY_OFFLOAD] = "set_rekey_offload",
 };
 
 static char cmdbuf[100];
@@ -209,8 +250,11 @@ void print_ssid_escaped(const uint8_t len, const uint8_t *data)
 	int i;
 
 	for (i = 0; i < len; i++) {
-		if (isprint(data[i]))
+		if (isprint(data[i]) && data[i] != ' ' && data[i] != '\\')
 			printf("%c", data[i]);
+		else if (data[i] == ' ' &&
+			 (i != 0 && i != len -1))
+			printf(" ");
 		else
 			printf("\\x%.2x", data[i]);
 	}

@@ -1,2 +1,2 @@
 #include "iw.h"
-const char iw_version[] = "0.9.21-18-gfc08b23-dirty";
+const char iw_version[] = "0.9.22-18-gfc08b23-dirty";
